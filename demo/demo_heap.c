@@ -1,5 +1,5 @@
 #include<stdio.h>
-#include"mymalloc.h"
+#include"../mymalloc.h"
 
 int main()
 {
