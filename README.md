@@ -307,3 +307,128 @@ int main()
 
 ![image-20220421011158825](README/image-20220421011158825.png)
 
+## 第一版free
+
+free接收一个指针作为参数，free做两件事：
+
+1. 将P位置置为free
+2. 将free后的chunk放入bin中
+
+现在，我们将bin设置为单向链表，这是最简单的链表，也是ptmalloc中fastbin使用的结构，在之后我们会使用更加复杂的结构
+
+首先，定义两个函数快速转换pdata和pchunk
+
+```c
+void* pdata2pchunk(void* pdata)
+{
+    return (void*)((uint8_t*)pdata-16);
+}
+
+void* pchunk2pdata(void* pchunk)
+{
+    return (void*)((uint8_t*)pchunk+16);
+}
+```
+
+pdata是指向chunk中数据字段的指针，是返回给用户的指针
+
+pchunk是指向chunk开头的指针，也就是指向prev_size字段
+
+定义一个bin头指针
+
+```c
+//bin头指针
+intptr_t* bin;
+```
+
+第一版myfree函数
+
+```c
+void myfree(void* pdata)
+{
+    //获取指向chunk头部的指针
+    void* pchunk = pdata2pchunk(pdata);
+    //将P标志位置为free
+    *((int64_t*)pdata-1) &= ~0x1;
+    
+    if(bin == NULL) //如果bin中没有chunk
+    {
+        bin = (intptr_t*)pchunk;
+        *(intptr_t*)pdata = 0;
+    }
+    else //bin中有chunk
+    {
+        *(intptr_t*)pdata = (intptr_t)bin; //将前一个bin保存到这一个chunk的fd字段
+        bin = (intptr_t*)pchunk; //将这一个chunkd
+    }
+}
+
+```
+
+![image-20220421133049033](README/image-20220421133049033.png)
+
+一开始，bin里面什么都没有
+
+![image-20220421133541999](README/image-20220421133541999.png)
+
+执行完依次free之后，bin中存放的是指向chunk_a的指针，这个指针指向了chunk_a，并且chunk_a的fd指针被置为0
+
+![image-20220421133942217](README/image-20220421133942217.png)
+
+执行完第二次free之后，bin中保存的是指向chunk_b的指针，而不再是chunk_a的指针了，我们也不必担心chunk_a会丢失，此时chunk_b的fd字段保存的是pchunk_a，所以它会指向chunk_a
+
+后面的free以此类推
+
+## 测试第一版myfree
+
+demo_myfree_version_1.c
+
+```c
+#include<stdio.h>
+#include"../mymalloc.h"
+
+int main()
+{
+
+    heap_init();
+    int* a = (int*)mymalloc(sizeof(int));
+    int* b = (int*)mymalloc(sizeof(int));
+    int* c = (int*)mymalloc(sizeof(int));
+
+    *a = 1;
+    *b = 2;
+    *c = 3; 
+
+    myfree(a);
+    myfree(b);
+    myfree(c);
+
+    printf("bin: %p\n", bin);
+
+    printf("\nheap:\n");
+    for (int i = 0; i < (ptop_chunk-pstart)/8; i++)
+    {
+        printf("%p %016lx\n", ((int64_t*)pstart)+i, *(((int64_t*)pstart)+i));
+    }
+
+    printf("\nbin:\n");
+
+    intptr_t* pItem = bin;
+    intptr_t fd = *(intptr_t*)pchunk2pdata(pItem);
+    while(fd != 0)
+    {
+        printf("%p -> ", pItem);
+        pItem = (intptr_t*)(fd);
+        fd = *(intptr_t*)pchunk2pdata(pItem);
+    }
+    printf("%p\n", pItem);
+
+    return 0;
+}
+```
+
+![image-20220421201249141](README/image-20220421201249141.png)
+
+从内存布局也可以看出：
+
+bin指向chunk_c，chunk_a的fd指向chunk_b，chunk_b的fd指向chunk_a

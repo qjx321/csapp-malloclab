@@ -3,7 +3,7 @@
 
 #include<stdint.h>
 
-#define MAX_MEM_SIZE 1000000
+#define MAX_MEM_SIZE 1000
 
 //模拟的内存
 uint8_t MEMORY[MAX_MEM_SIZE] = {0}; 
@@ -16,6 +16,26 @@ uint8_t* ptop_chunk;
 
 //chunk的数量
 unsigned chunk_num = 0;
+
+// typedef struct CHUNK
+// {
+//     intptr_t pchunk; //保存该chunk在内存中的起始地址，也就是pchunk
+//     struct CHUNK* fd; //指向下一个CHUNK结构体
+//     struct CHUNK* bk; //指向上一个CHUNK结构体
+// }chunk_t, *pchunk_t;
+
+//bin头指针
+intptr_t* bin;
+
+void* pdata2pchunk(void* pdata)
+{
+    return (void*)((uint8_t*)pdata-16);
+}
+
+void* pchunk2pdata(void* pchunk)
+{
+    return (void*)((uint8_t*)pchunk+16);
+}
 
 //P标志位
 typedef enum p {free, inuse} P;
@@ -75,5 +95,23 @@ void* mymalloc(int64_t size)
     return ret;
 }
 
+void myfree(void* pdata)
+{
+    //获取指向chunk头部的指针
+    void* pchunk = pdata2pchunk(pdata);
+    //将P标志位置为free
+    *((int64_t*)pdata-1) &= ~0x1;
+    
+    if(bin == NULL) //如果bin中没有chunk
+    {
+        bin = (intptr_t*)pchunk;
+        *(intptr_t*)pdata = 0;
+    }
+    else //bin中有chunk
+    {
+        *(intptr_t*)pdata = (intptr_t)bin; //将前一个bin保存到这一个chunk的fd字段
+        bin = (intptr_t*)pchunk; //将这一个chunk的指针放入bin中
+    } 
+}
 
 #endif
