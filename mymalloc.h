@@ -29,12 +29,18 @@ intptr_t* bin;
 
 void* pdata2pchunk(void* pdata)
 {
-    return (void*)((uint8_t*)pdata-16);
+    return (void*)((int8_t*)pdata-16);
 }
 
 void* pchunk2pdata(void* pchunk)
 {
-    return (void*)((uint8_t*)pchunk+16);
+    return (void*)((int8_t*)pchunk+16);
+}
+
+//由pchunk获取该chunk的size
+int64_t pchunk2size(void* pchunk)
+{
+    return *(int64_t*)((int8_t*)pchunk+8) & ~0x1;
 }
 
 //P标志位
@@ -69,6 +75,33 @@ void* mysbrk(int increment)
     return pret;
 }
 
+void* best_fit(int64_t size)
+{
+    // 如果bin为空，直接返回NULL
+    if (bin == NULL)
+    {
+        return NULL;
+    }
+    //遍历bin寻找合适的free chunk
+    intptr_t* pItem = bin;
+    intptr_t fd = *(intptr_t*)pchunk2pdata(pItem);
+    while(fd != 0)
+    {
+        if(pchunk2size(pItem) == size)
+        {
+            return (void*)pItem;
+        }
+        pItem = (intptr_t*)(fd);
+        fd = *(intptr_t*)pchunk2pdata(pItem);
+    }
+    if(pchunk2size(pItem) == size)
+    {
+        return (void*)pItem;
+    }
+
+    return NULL;
+}
+
 
 void* mymalloc(int64_t size)
 {
@@ -79,6 +112,13 @@ void* mymalloc(int64_t size)
     }
     //计算chunk的size
     int64_t chunk_size = (size + 16) + (size % 16 ? 16-(size%16) : 0);
+
+    void* pfree_chunk;
+    if ((pfree_chunk = best_fit(chunk_size)) != NULL)
+    {
+        *(int64_t*)((int8_t*)pfree_chunk+8) |= 0x1; //将P标志位设置位inuse
+        return pchunk2pdata(pfree_chunk);
+    }
 
     //在heap中布置chunk结构
     *((int64_t*)(ptop_chunk) + 1) = pack(chunk_size, inuse);

@@ -432,3 +432,152 @@ int main()
 从内存布局也可以看出：
 
 bin指向chunk_c，chunk_a的fd指向chunk_b，chunk_b的fd指向chunk_a
+
+# 使用free chunk
+
+至此，我们实现了可以切割top chunk来分配chunk的malloc，实现了可以将未使用的chunk放入bin的free
+
+你可能回想：为什么要把free chunk收集起来？
+
+答案显而易见，收集起来是为了再次使用
+
+如果你在程序的一个地方malloc了20个字节，那么有很大的可能你会在程序的其他地方多次malloc20个字节的内存，如果每次都从top chunk中去切割是很不方便的，还会造成内存碎片
+
+所以每次free，我们都将free chunk放入bin中，下一次malloc内存是，我们下去bin中查找有没有合适大小的free chunk，如果有，那就直接将这个free chunk返回给用户
+
+定义一个函数，用于由pchunk推算该chunk的size
+
+```c
+int64_t pchunk2size(void* pchunk)
+{
+    return *(int64*)((int8_t*)pchunk+8) & ~0x1;
+}
+```
+
+在mymalloc函数中添加如下代码：
+
+pfree_chunk用来指向一个free_chunk，函数best_fit（稍后实现）用来寻找合适的free_chunk，如果找到，返回该chunk并将其返回给用户，如果未找到，返回NULL，继续从top chunk中切割chunk
+
+```c
+void* pfree_chunk;
+if ((pfree_chunk = best_fit(chunk_size)) != NULL)
+{
+    *(int64_t*)((int8_t*)pfree_chunk+8) |= 0x1; //将P标志位设置位inuse
+    return pchunk2pdata(pfree_chunk);
+}
+```
+
+best_fit函数，顾名思义：寻找最匹配的free chunk
+
+```c
+void* best_fit(int64_t size)
+{
+    // 如果bin为空，直接返回NULL
+    if (bin == NULL)
+    {
+        return NULL;
+    }
+    //遍历bin寻找合适的free chunk
+    intptr_t* pItem = bin;
+    intptr_t fd = *(intptr_t*)pchunk2pdata(pItem);
+    while(fd != 0)
+    {
+        if(pchunk2size(pItem) == size)
+        {
+            return (void*)pItem;
+        }
+        pItem = (intptr_t*)(fd);
+        fd = *(intptr_t*)pchunk2pdata(pItem);
+    }
+    if(pchunk2size(pItem) == size)
+    {
+        return (void*)pItem;
+    }
+
+    return NULL;
+}
+```
+
+第二版mymalloc：
+
+```c
+void* mymalloc(int64_t size)
+{
+    //不合法的size
+    if (size <= 0)
+    {
+        return NULL;
+    }
+    //计算chunk的size
+    int64_t chunk_size = (size + 16) + (size % 16 ? 16-(size%16) : 0);
+
+    void* pfree_chunk;
+    if ((pfree_chunk = best_fit(chunk_size)) != NULL)
+    {
+        *(int64_t*)((int8_t*)pfree_chunk+8) |= 0x1; //将P标志位设置位inuse
+        return pchunk2pdata(pfree_chunk);
+    }
+
+    //在heap中布置chunk结构
+    *((int64_t*)(ptop_chunk) + 1) = pack(chunk_size, inuse);
+
+    //如果是第一个chunk
+    if (chunk_num == 0)
+    {
+        *(int64_t*)ptop_chunk = 0;
+    }
+    chunk_num++;
+
+    void* ret = (void*)(ptop_chunk + 16);
+    ptop_chunk += chunk_size;
+    return ret;
+}
+```
+
+# 测试使用free chunk
+
+```c
+#include<stdio.h>
+#include"../mymalloc.h"
+
+int main(void)
+{
+    heap_init();
+
+    char* a = (char*)mymalloc(0xf); //0x20
+    char* b = (char*)mymalloc(0x11); //0x30
+    char* c = (char*)mymalloc(0x21); //0x40
+
+    printf("a: %p\n", a);
+    printf("b: %p\n", b);
+    printf("c: %p\n", c);
+
+    myfree(a);
+    myfree(b);
+    myfree(c);
+
+    char* d = (char*)mymalloc(0x12); //0x30
+    char* e = (char*)mymalloc(0x22); //0x40
+    char* f = (char*)mymalloc(0x32); //0x50
+
+    printf("d: %p\n", d);
+    printf("e: %p\n", e);
+    printf("f: %p\n", f);
+
+
+    printf("\nheap:\n");
+    for (int i = 0; i < (ptop_chunk-pstart)/8; i++)
+    {
+        printf("%p %016lx\n", ((int64_t*)pstart)+i, *(((int64_t*)pstart)+i));
+    }
+
+    return 0;
+}
+```
+
+![image-20220421221217293](README/image-20220421221217293.png)
+
+从测试结果也可以看出free chunk确实被重复使用了
+
+b申请了0x11字节的内存，所以b的chunk size为0x20，b被free之后，bin中就存在了一个size为0x20的free chunk，而后d申请0x12字节的内存，b的chunk size也为0x20，所以此时bin中的那个起初由b使用的free chunk会被再次分配给d使用，c和e同理
+
